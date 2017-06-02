@@ -222,5 +222,6 @@
     <orderEntry type="library" name="Maven: io.fastjson:boon:0.33" level="project" />
     <orderEntry type="library" name="Maven: com.google.code.gson:gson:2.7" level="project" />
     <orderEntry type="library" name="Maven: com.googlecode.json-simple:json-simple:1.1.1" level="project" />
+    <orderEntry type="library" name="Maven: com.databricks:spark-xml_2.11:0.4.1" level="project" />
   </component>
 </module>
