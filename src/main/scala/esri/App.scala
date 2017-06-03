@@ -92,6 +92,8 @@ object App {
         val toDouble = udf[Double, Vector] {
             try {
                 _.toArray(0)
+            } catch {
+                case e: Exception => throw new Exception("\n" + "toDouble failed")
             }
         }
 
