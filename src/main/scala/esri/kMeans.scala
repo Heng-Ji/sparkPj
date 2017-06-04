@@ -73,11 +73,11 @@ object kMeans {
         // predict numerical clusters, and transform clusterWithIndex to DataFrame (originally it was array)
         val prediction = model.transform(data)
         // change the type of features in prediction from vector to array for future usage
-        val predictions = prediction.withColumn("features", toArray(prediction("features")))
+        val predictions = prediction
+            .withColumn("features", toArray(prediction("features")))
         // transform clusterWithIndex to DataFrame, prediction contains the numerical value while centroid contains the coordinates
         val clusterCentroid = sc.parallelize(clusterWithIndex)
-          .toDF("label", "centroid")
-
+            .toDF("label", "centroid")
 
         // pairing the original coordinates with its corresponding centroid
         val combined = predictions.as("d1")
@@ -127,7 +127,7 @@ object kMeans {
     def kMeansCluster(geoData: sql.DataFrame): (sql.DataFrame, Int) = {
         var result: sql.DataFrame = null
         breakable {
-            for (i <- 2 to 50) {
+            for (i <- 5 to 5) {
                 val (m, b) = clusteringScore(geoData, i)
                 println(prev, m)
                 if (prev > m && (prev - m) / prev < diff) {
