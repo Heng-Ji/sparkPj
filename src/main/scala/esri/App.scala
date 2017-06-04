@@ -29,7 +29,13 @@ object App {
         .appName("app")
         .getOrCreate()
 
-
+    // add index of columns to dataframe
+    def addColumnIndex(df: DataFrame) = spark.createDataFrame(
+        df.rdd.zipWithIndex().map {
+            case (row, idx) => Row.fromSeq(row.toSeq :+ idx)
+        },
+        StructType(df.schema.fields :+ StructField("columnIndex", LongType, false))
+    )
 
     def main(args: Array[String]): Unit = {
 
@@ -76,13 +82,7 @@ object App {
             .withColumn("col2", $"col2".cast("timestamp"))
         val diffSecs = col("col2").cast("long") - col("col1").cast("long")
 
-        // add index of columns to dataframe
-        def addColumnIndex(df: DataFrame) = spark.createDataFrame(
-            df.rdd.zipWithIndex().map {
-                case (row, idx) => Row.fromSeq(row.toSeq :+ idx)
-            },
-            StructType(df.schema.fields :+ StructField("columnIndex", LongType, false))
-        )
+
         val df2 = timeDiff.withColumn("diffMins", diffSecs / 60D)
         val df1WithIndex = addColumnIndex(dataToParse)
         val df2WithIndex = addColumnIndex(df2)
