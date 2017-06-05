@@ -41,7 +41,7 @@ object kMeans {
     def toArrayDouble(x: Array[(Double, Int)], y: Int): Array[Double] = {
         try {
             x.filter(row => row._2 % 2 == y)
-              .map(row => row._1)
+                .map(row => row._1)
         } catch {
             case e: Exception => throw new Exception("\n" + "tooArrayDouble failed")
         }
@@ -50,10 +50,10 @@ object kMeans {
     def dataframeToArray(x: sql.DataFrame, inputColumn: String, outputColumn: String): Array[Double] = {
         try {
             x.withColumn(outputColumn, toDouble(x(inputColumn)))
-              .rdd.collect()
-              .map(row => row.get(0)
-                .toString
-                .toDouble)
+                .rdd.collect()
+                .map(row => row.get(0)
+                    .toString
+                    .toDouble)
         } catch {
             case e: Exception => throw new Exception("\n" + "dataframeToArray failed")
         }
@@ -81,8 +81,8 @@ object kMeans {
 
         // pairing the original coordinates with its corresponding centroid
         val combined = predictions.as("d1")
-          .join(clusterCentroid.as("d2"), col("d1.prediction") === col("d2.label"), "inner")
-          .drop(col("d1.prediction"))
+            .join(clusterCentroid.as("d2"), col("d1.prediction") === col("d2.label"), "inner")
+            .drop(col("d1.prediction"))
 
         // extracting the coordinates
         val originalLatLon = combined.selectExpr("explode(features) as e")
@@ -90,11 +90,11 @@ object kMeans {
 
         // paring lat and long
         val extractedOri = dataframeToArray(originalLatLon, "e", "features")
-          .zipWithIndex
+            .zipWithIndex
 
 
         val extractedClust = dataframeToArray(clusterLatLon, "e", "centroid")
-          .zipWithIndex
+            .zipWithIndex
 
         case class Row(i: Double, j: Double, k: Double, m: Double)
         val latCluster = toArrayDouble(extractedClust, 0)
@@ -116,7 +116,7 @@ object kMeans {
         sumation.show()
         val average = sumation.agg(sum("d").cast("long"))
         average.show()
-        (math.sqrt(average.first().getLong(0)), combined.select("shape", "duration", "label"))
+        (math.sqrt(average.first().getLong(0)), combined.select("shape", "duration", "label", "diffMins"))
     }
 
     var k: Int = 0
@@ -127,13 +127,11 @@ object kMeans {
     def kMeansCluster(geoData: sql.DataFrame): (sql.DataFrame, Int) = {
         var result: sql.DataFrame = null
         breakable {
-            for (i <- 5 to 5) {
+            for (i <- 2 to 50) {
                 val (m, b) = clusteringScore(geoData, i)
-                println(prev, m)
                 if (prev > m && (prev - m) / prev < diff) {
                     k = i
                     result = b
-//                    model.clusterCenters.foreach(println)
                     break
                 }
                 prev = m

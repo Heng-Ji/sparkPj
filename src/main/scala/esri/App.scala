@@ -90,9 +90,6 @@ object App {
             .join(df2WithIndex, Seq("columnIndex"))
             .drop("columnIndex", "ts", "col1", "col2")
 
-        parsedData.show()
-        sys.exit()
-
         // assemble longitude and latitude to features
         val assembler = new VectorAssembler()
             .setInputCols(Array("latitude", "longitude"))
@@ -103,8 +100,11 @@ object App {
             .transform(parsedData)
             .cache()
 
-        val (labeled, clusters) = kMeans.kMeansCluster(geoData)
 
+        val (labeled, clusters) = kMeans.kMeansCluster(geoData)
+//
+//        labeled.show()
+//        sys.exit()
         // transforming categorical data to numeric
         val indexer = new StringIndexer()
             .setInputCol("shape")
@@ -128,7 +128,7 @@ object App {
             }
         }
 
-        val toDouble = udf[Double, Vector] {
+        val vecToDouble = udf[Double, Vector] {
             try {
                 _.toArray(0)
             } catch {
@@ -136,26 +136,39 @@ object App {
             }
         }
 
+
         val vecData = indexed
             .withColumn("duration", toVec(indexed("duration")))
+            .withColumn("diffMins", toVec(indexed("diffMins")))
 
         val scalerModel = scaler.fit(vecData)
-        val scaledData = scalerModel.transform(vecData)
-        val transformedData = scaledData
-            .withColumn("duration", toDouble(scaledData("durations")))
+        val scaledData1 = scalerModel.transform(vecData)
+        val transformedData1 = scaledData1
+            .withColumn("duration", vecToDouble(scaledData1("durations")))
 
-        assembler
-            .setInputCols(Array("shapeIndex", "duration"))
+        scaler
+            .setInputCol("diffMins")
+            .setOutputCol("scaledDiff")
+            .setWithStd(true)
+            .setWithMean(false)
+        val scalerModel2 = scaler.fit(transformedData1)
+        val scaledData2 = scalerModel2.transform(transformedData1)
+        val transformedData2 = scaledData2
+            .withColumn("diffMins", vecToDouble(scaledData2("scaledDiff")))
+
+        val assembler2 = new VectorAssembler()
+            .setInputCols(Array("shapeIndex", "duration", "diffMins"))
             .setOutputCol("features")
 
-        val trainingData = assembler
-            .transform(transformedData)
+        val trainingData = assembler2
+            .transform(transformedData2)
             .select("features", "label")
+            .withColumn("label", $"label".cast("double"))
 
         val splits = trainingData.randomSplit(Array(0.6, 0.4))
         val train = splits(0)
         val test = splits(1)
-        val layers = Array[Int](2, 30, 20, clusters)
+        val layers = Array[Int](3, 30, 30, clusters)
 
         val trainer = new MultilayerPerceptronClassifier()
             .setLayers(layers)
@@ -184,6 +197,7 @@ object App {
         val results = model1.transform(test)
         val predictionAndLabels = results.select("prediction", "label")
         results.show()
+
 
         println("Test set accuracy = " + evaluator.evaluate(predictionAndLabels))
         println("Number of clusters = " + clusters)
