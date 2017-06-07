@@ -129,7 +129,7 @@ object kMeans {
     val diff = 0.03
     var prev: Double = Float.MaxValue.toDouble
 
-    // searching for appropriate k
+    // searching for appropriate k 
     def kMeansCluster(geoData: sql.DataFrame): (sql.DataFrame, Int) = {
         var result: sql.DataFrame = null
         breakable {
@@ -147,18 +147,19 @@ object kMeans {
                     }
                     val clusters = sc.parallelize(lat.zip(long)).toDF("latitude", "longitude")
                     clusters
+//                    model.save("kmeans")
+//                    result
                       .coalesce(1)
-                      .select("latitude", "longitude")
                       .write
                       .format("csv")
                       .option("header", "true")
-                      .save("hh.csv")
+                      .save("centroid.csv")
+                    sys.exit()
                     break
                 }
                 prev = err
             }
         }
-        sys.exit()
         (result, k)
     }
 }

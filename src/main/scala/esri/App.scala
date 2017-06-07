@@ -1,10 +1,10 @@
 package esri
 
-import java.io.File
-
-import org.apache.spark.{SparkConf, SparkContext}
+import esri.App.{indexer, scaler}
+import org.apache.spark.{SparkConf, SparkContext, sql}
 import org.apache.spark.ml.Pipeline
-import org.apache.spark.ml.classification.MultilayerPerceptronClassifier
+import org.apache.spark.ml.classification.{DecisionTreeClassificationModel, MultilayerPerceptronClassifier}
+import org.apache.spark.ml.clustering.KMeansModel
 import org.apache.spark.ml.evaluation.MulticlassClassificationEvaluator
 import org.apache.spark.ml.linalg.{Vector, Vectors}
 import org.apache.spark.ml.feature.{StandardScaler, StringIndexer, VectorAssembler}
@@ -31,19 +31,62 @@ object App {
       .getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
 
-    // add index of columns to dataframe
-    def addColumnIndex(df: DataFrame) = spark.createDataFrame(
+    // add index of rows to dataframe
+    def addRowIndex(df: DataFrame) = spark.createDataFrame(
         df.rdd.zipWithIndex().map {
             case (row, idx) => Row.fromSeq(row.toSeq :+ idx)
         },
         StructType(df.schema.fields :+ StructField("columnIndex", LongType, false))
     )
 
+    // assemble the columns to vector for model to fit
+    def assembler(df: sql.DataFrame, inputCol: Array[String]): sql.DataFrame = {
+        val assembler = new VectorAssembler()
+          .setInputCols(inputCol)
+          .setOutputCol("features")
+        assembler.transform(df)
+    }
+
+    // normalizing duration to unit mean, zero deviation
+    def scaler(df: sql.DataFrame, inputCol: String, outputCol: String): sql.DataFrame = {
+        val scaler = new StandardScaler()
+          .setInputCol(inputCol)
+          .setOutputCol(outputCol)
+          .setWithStd(true)
+          .setWithMean(false)
+        val scalerModel = scaler.fit(df)
+        scalerModel.transform(df)
+    }
+
+    def indexer(df: sql.DataFrame, inputCol: String, outputCol: String): sql.DataFrame = {
+        val indexer = new StringIndexer()
+          .setInputCol(inputCol)
+          .setOutputCol(outputCol)
+          .fit(df)
+        indexer.transform(df)
+    }
+
+    // transform DataFrame column with type double to type Vec
+    val doubleToVec = udf[Vector, Double] {
+        try {
+            Vectors.dense(_)
+        } catch {
+            case e: Exception => throw new Exception("\n" + "toVec failed")
+        }
+    }
+
+    // transform Vec back to double
+    val vecToDouble = udf[Double, Vector] {
+        try {
+            _.toArray(0)
+        } catch {
+            case e: Exception => throw new Exception("\n" + "toDouble failed")
+        }
+    }
+
     def main(args: Array[String]): Unit = {
 
         // initializing SparkContext and loading data
-
-
         import spark.implicits._
 
         val path = "complete1.csv"
@@ -70,116 +113,88 @@ object App {
           .filter("latitude != 0.0")
           .filter("duration != 0.0")
           .select("ts", "shape", "duration", "latitude", "longitude")
+          .orderBy(asc("ts"))
         dataToParse.cache()
 
-        //        dataToParse
-        //          .coalesce(1)
-        //          .select("latitude", "longitude")
-        //          .write
-        //          .format("csv")
-        //          .option("header", "true")
-        //          .save("hhha.csv")
+
+        // transform array of timestamp from any(type) to string
         val tsArr = dataToParse.select("ts").rdd.collect().map(row => row(0))
 
+        // split timestamp array to two arrays, one indexed from [0,0,1,2,3,...,n-2],
+        // another from [0,1,2,3,...,n-1], then create dataframe consisting of 2 columns,
+        // col1 and col2, where col1 stands for arr1 and col2 stands for arr2, apply
+        // col2 - col1 to calculate the time difference
         val arr1 = (tsArr(0) +: tsArr.slice(0, tsArr.length - 1))
           .map(row => row.toString)
-
         val arr2 = tsArr.map(row => row.toString)
+
         val timeDiff = sc.parallelize(arr1.zip(arr2))
           .toDF("col1", "col2")
           .withColumn("col1", $"col1".cast("timestamp"))
           .withColumn("col2", $"col2".cast("timestamp"))
+        // function to calculate time difference in seconds
         val diffSecs = col("col2").cast("long") - col("col1").cast("long")
-
-
+        // df2 with column "diffMins", containing the time difference between two consecutive datetime
         val df2 = timeDiff.withColumn("diffMins", diffSecs / 60D)
-        val df1WithIndex = addColumnIndex(dataToParse)
-        val df2WithIndex = addColumnIndex(df2)
+        // add row index to df2 and original data, for the purpose of combining them (parsedData)
+        val df1WithIndex = addRowIndex(dataToParse)
+        val df2WithIndex = addRowIndex(df2)
         val parsedData = df1WithIndex
           .join(df2WithIndex, Seq("columnIndex"))
           .drop("columnIndex", "ts", "col1", "col2")
 
-        // assemble longitude and latitude to features
-        val assembler = new VectorAssembler()
-          .setInputCols(Array("latitude", "longitude"))
-          .setOutputCol("features")
 
-        // geoData
-        val geoData = assembler
-          .transform(parsedData)
-          .cache()
+        // assemble longitude and latitude to features, in order to fit kMeansModel
+        val geoData = assembler(parsedData, Array("longitude", "latitude"))
+
+        geoData.cache()
+
+                kMeans.kMeansCluster(geoData)
+
+        // loading kMeansModel and data
+        val kmeansModel = KMeansModel.load("kmeans")
+        val clusters = kmeansModel.clusterCenters.length
+        val labeled = spark.read
+          .format("csv")
+          .option("header", true)
+          .csv("res.csv")
+          .drop("prediction")
 
 
-        val (labeled, clusters) = kMeans.kMeansCluster(geoData)
+        sys.exit()
         // transforming categorical data to numeric
-        val indexer = new StringIndexer()
-          .setInputCol("shape")
-          .setOutputCol("shapeIndex")
-          .fit(labeled)
 
-        val indexed = indexer.transform(labeled)
+        val indexed = indexer(labeled, "shape", "shapeIndex")
 
-        // normalizing duration to unit mean, zero deviation
-        val scaler = new StandardScaler()
-          .setInputCol("duration")
-          .setOutputCol("durations")
-          .setWithStd(true)
-          .setWithMean(false)
-
-        val toVec = udf[Vector, Double] {
-            try {
-                Vectors.dense(_)
-            } catch {
-                case e: Exception => throw new Exception("\n" + "toVec failed")
-            }
-        }
-
-        val vecToDouble = udf[Double, Vector] {
-            try {
-                _.toArray(0)
-            } catch {
-                case e: Exception => throw new Exception("\n" + "toDouble failed")
-            }
-        }
-
-
+        // transform duration and diffMins to vector in order to fit the scaler
         val vecData = indexed
-          .withColumn("duration", toVec(indexed("duration")))
-          .withColumn("diffMins", toVec(indexed("diffMins")))
+          .withColumn("duration", doubleToVec(indexed("duration")))
+          .withColumn("diffMins", doubleToVec(indexed("diffMins")))
 
-        val scalerModel = scaler.fit(vecData)
-        val scaledData1 = scalerModel.transform(vecData)
-        val transformedData1 = scaledData1
-          .withColumn("duration", vecToDouble(scaledData1("durations")))
+        val scaledDuration = scaler(vecData, "duration", "durations")
+          .withColumn("duration", vecToDouble(col("durations")))
 
-        scaler
-          .setInputCol("diffMins")
-          .setOutputCol("scaledDiff")
-          .setWithStd(true)
-          .setWithMean(false)
-        val scalerModel2 = scaler.fit(transformedData1)
-        val scaledData2 = scalerModel2.transform(transformedData1)
-        val transformedData2 = scaledData2
-          .withColumn("diffMins", vecToDouble(scaledData2("scaledDiff")))
+        val scaledFinal = scaler(scaledDuration, "diffMins", "scaledDiff")
+          .withColumn("diffMins", vecToDouble(col("scaledDiff")))
 
-        val assembler2 = new VectorAssembler()
-          .setInputCols(Array("shapeIndex", "duration", "diffMins"))
-          .setOutputCol("features")
-
-        val trainingData = assembler2
-          .transform(transformedData2)
+        val trainingData = assembler(scaledFinal, Array("shapeIndex", "duration", "diffMins"))
           .select("features", "label")
           .withColumn("label", $"label".cast("double"))
+        trainingData.show()
+        sys.exit()
+        // training neural networks
         val splits = trainingData.randomSplit(Array(0.6, 0.4))
         val train = splits(0)
         val test = splits(1)
-        val layers = Array[Int](3, 30, 30, clusters)
+        val layers = Array[Int](3, (3 + clusters) * 2 / 3, clusters)
 
         val trainer = new MultilayerPerceptronClassifier()
           .setLayers(layers)
           .setBlockSize(128)
-          .setSeed(1234L)
           .setMaxIter(100)
+          .setTol(0.1)
+
+        //        val foo: Nothing = trainer
 
         val pipeline = new Pipeline()
           .setStages(Array(trainer))
@@ -199,7 +214,7 @@ object App {
           .setNumFolds(5)
 
         val model1 = cv.fit(train)
-        val results = model1.transform(test)
+        val results = model1.bestModel.transform(test)
         val predictionAndLabels = results.select("prediction", "label")
         results
           .select("prediction", "label")
@@ -207,11 +222,13 @@ object App {
           .write
           .format("csv")
           .option("header", "true")
-          .save("res.csv")
+          .save("resForNN.csv")
 
 
-        println("Test set accuracy = " + evaluator.evaluate(predictionAndLabels))
-        println("Number of clusters = " + clusters)
+        //        val newPrediction = model1.transform(......)
+
+        println("Test set accuracy for NN = " + evaluator.evaluate(predictionAndLabels))
+
 
     }
 
