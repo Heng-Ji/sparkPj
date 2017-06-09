@@ -77,7 +77,7 @@ object kMeans {
           .drop("features")
 
         // compute Euclidean distance
-        val err = math.sqrt(model.computeCost(data) / data.count())
+        val err = model.computeCost(data)
         println(err)
         (err, result, clusterCentroid.select("centroid"), model)
         //
@@ -126,14 +126,14 @@ object kMeans {
     }
 
     var k: Int = 0
-    val diff = 0.03
+    val diff = 0.01
     var prev: Double = Float.MaxValue.toDouble
 
-    // searching for appropriate k 
+    // searching for appropriate k
     def kMeansCluster(geoData: sql.DataFrame): (sql.DataFrame, Int) = {
         var result: sql.DataFrame = null
         breakable {
-            for (i <- 2 to 50) {
+            for (i <- 10 to 10) {
                 val (err, r, c, model) = clusteringScore(geoData, i)
                 if (prev > err && (prev - err) / prev < diff) {
                     k = i
@@ -146,9 +146,8 @@ object kMeans {
                         case (value, i) if i % 2 != 0 => value
                     }
                     val clusters = sc.parallelize(lat.zip(long)).toDF("latitude", "longitude")
-                    clusters
 //                    model.save("kmeans")
-//                    result
+                    result
                       .coalesce(1)
                       .write
                       .format("csv")
@@ -160,6 +159,7 @@ object kMeans {
                 prev = err
             }
         }
+        sys.exit()
         (result, k)
     }
 }

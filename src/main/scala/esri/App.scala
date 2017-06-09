@@ -12,14 +12,13 @@ import org.apache.spark.ml.tuning.{CrossValidator, ParamGridBuilder}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
-
+import org.dmg.pmml.TimeSeries
 
 /**
   * Created By Heng Ji on 5/24/2017
   *
   */
 object App {
-
     val conf = new SparkConf()
       .setAppName("app")
       .setMaster("local[2]")
@@ -75,20 +74,21 @@ object App {
         }
     }
 
-    // transform Vec back to double
-    val vecToDouble = udf[Double, Vector] {
-        try {
-            _.toArray(0)
-        } catch {
-            case e: Exception => throw new Exception("\n" + "toDouble failed")
-        }
-    }
+    //    // transform Vec back to double
+    //    val vecToDouble = udf[Double, Vector] {
+    //        try {
+    //            _.toArray(0)
+    //        } catch {
+    //            case e: Exception => throw new Exception("\n" + "toDouble failed")
+    //        }
+    //    }
 
     def main(args: Array[String]): Unit = {
 
         // initializing SparkContext and loading data
         import spark.implicits._
-
+//        lr.lr()
+//        sys.exit()
         val path = "complete1.csv"
         val df = spark.read
           .format("csv")
@@ -97,13 +97,14 @@ object App {
 
         // data cleaning
         val data = df
-          .selectExpr(
+          .selectExpr("cast (state as string) state",
               "cast(datetime as string) datetime",
               "cast(shape as string) shape",
               "cast(duration as double) duration",
               "cast(latitude as double) latitude",
               "cast(longitude as double) longitude")
 
+        val tmp = data.na.drop().filter("latitude != 0.0").filter("duration != 0.0")
         // parse datetime to timestamp
         val ts = unix_timestamp($"datetime", "MM/dd/yyyy HH:mm").cast("timestamp")
         val dataToParse = data
@@ -112,9 +113,10 @@ object App {
           .drop()
           .filter("latitude != 0.0")
           .filter("duration != 0.0")
-          .select("ts", "shape", "duration", "latitude", "longitude")
+          .select("ts", "state", "shape", "duration", "latitude", "longitude")
           .orderBy(asc("ts"))
         dataToParse.cache()
+//        sys.exit()
 
 
         // transform array of timestamp from any(type) to string
@@ -146,22 +148,36 @@ object App {
 
         // assemble longitude and latitude to features, in order to fit kMeansModel
         val geoData = assembler(parsedData, Array("longitude", "latitude"))
-
         geoData.cache()
-
-                kMeans.kMeansCluster(geoData)
+                        kMeans.kMeansCluster(geoData)
 
         // loading kMeansModel and data
-        val kmeansModel = KMeansModel.load("kmeans")
+        val kmeansModel = KMeansModel.load("data/kmeans")
         val clusters = kmeansModel.clusterCenters.length
         val labeled = spark.read
           .format("csv")
           .option("header", true)
-          .csv("res.csv")
+          .csv("data/res.csv")
           .drop("prediction")
+          .withColumn("duration", $"duration".cast("double"))
+          .withColumn("latitude", $"latitude".cast("double"))
+          .withColumn("longitude", $"longitude".cast("double"))
+          .withColumn("diffMins", $"diffMins".cast("double"))
+          .withColumn("label", $"label".cast("int"))
+        labeled.show()
+        labeled.printSchema()
+//          .withColumn("label", $"label".cast("int"))
+//        for (i <- 0 to clusters - 1) {
+//            labeled.filter($"label" === i)
+//              .select("latitude", "longitude")
+//              .coalesce(1, true)
+//              .write
+//              .format("csv")
+//              .option("header", "true")
+//              .save(s"res$i.csv")
+//        }
+//        sys.exit()
 
-
-        sys.exit()
         // transforming categorical data to numeric
 
         val indexed = indexer(labeled, "shape", "shapeIndex")
@@ -170,23 +186,21 @@ object App {
         val vecData = indexed
           .withColumn("duration", doubleToVec(indexed("duration")))
           .withColumn("diffMins", doubleToVec(indexed("diffMins")))
+//        val scaledDuration = scaler(vecData, "duration", "durations")
+//
+//        val scaledFinal = scaler(scaledDuration, "diffMins", "scaledDiff")
 
-        val scaledDuration = scaler(vecData, "duration", "durations")
-          .withColumn("duration", vecToDouble(col("durations")))
-
-        val scaledFinal = scaler(scaledDuration, "diffMins", "scaledDiff")
-          .withColumn("diffMins", vecToDouble(col("scaledDiff")))
-
-        val trainingData = assembler(scaledFinal, Array("shapeIndex", "duration", "diffMins"))
+        val trainingData = assembler(vecData, Array("shapeIndex", "durations", "scaledDiff"))
           .select("features", "label")
-          .withColumn("label", $"label".cast("double"))
         trainingData.show()
+        trainingData.printSchema()
         sys.exit()
+
         // training neural networks
         val splits = trainingData.randomSplit(Array(0.6, 0.4))
         val train = splits(0)
         val test = splits(1)
-        val layers = Array[Int](3, (3 + clusters) * 2 / 3, clusters)
+        val layers = Array[Int](3, (3 + clusters) / 2, clusters)
 
         val trainer = new MultilayerPerceptronClassifier()
           .setLayers(layers)
@@ -222,10 +236,16 @@ object App {
           .write
           .format("csv")
           .option("header", "true")
-          .save("resForNN.csv")
+          .save("data/resForNN.csv")
 
-
-        //        val newPrediction = model1.transform(......)
+        val inputRaw = spark.createDataFrame(Seq(
+            (0.0, 1.1, 1.2),
+            (1.0, 1.2, 0.5),
+            (1.0, 0.8, 0.4)))
+          .toDF("col1", "col2", "col3")
+        val inputTransformed = assembler(inputRaw, Array("col1", "col2", "col3"))
+        val newPrediction = model1.transform(inputTransformed)
+        newPrediction.show()
 
         println("Test set accuracy for NN = " + evaluator.evaluate(predictionAndLabels))
 
